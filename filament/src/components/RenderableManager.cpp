@@ -36,16 +36,10 @@ using namespace details;
 
 struct InternalBone {
     // Bones are stored as row-major
-    math::float4 verticesTransformRowMajor[3] = {
-            { 1.0f, 0.0f, 0.0f, 0.0f },
-            { 0.0f, 1.0f, 0.0f, 0.0f },
-            { 0.0f, 0.0f, 1.0f, 0.0f }
-    };
-    math::float4 normalsTransformRowMajor[3] = {
-            { 1.0f, 0.0f, 0.0f, 0.0f },
-            { 0.0f, 1.0f, 0.0f, 0.0f },
-            { 0.0f, 0.0f, 1.0f, 0.0f }
-    };
+    math::quatf rigidTransform = { 1, 0, 0, 0 };
+    math::float4 translation = {};
+    math::float4 scales = { 1, 1, 1, 0 };
+    math::float4 iscales = { 1, 1, 1, 0 };
 };
 
 static_assert(CONFIG_MAX_BONE_COUNT * sizeof(InternalBone) <= 16384, "Bones exceed max UBO size");
@@ -487,21 +481,9 @@ void FRenderableManager::setBones(Instance ci,
                     offset * sizeof(InternalBone),
                     boneCount * sizeof(InternalBone));
             for (size_t i = 0, c = bones->count; i < c; ++i) {
-                mat4f t(transforms[i].unitQuaternion);
-                t[3].xyz = transforms[i].translation;
-
-                const mat4f m = transpose(t); // row-major
-                out[i].verticesTransformRowMajor[0] = m[0];
-                out[i].verticesTransformRowMajor[1] = m[1];
-                out[i].verticesTransformRowMajor[2] = m[2];
-
-                // for transforming normals, we can ignore the translation, and we need
-                // to take the transpose(inverse()). However, we know we're dealing with
-                // a rigid transform, so the inverse is the transpose and they cancel out.
-                // Then, we take the transpose() for row-major encoding.
-                out[i].normalsTransformRowMajor[0] = m[0];
-                out[i].normalsTransformRowMajor[1] = m[1];
-                out[i].normalsTransformRowMajor[2] = m[2];
+                out[i].rigidTransform = transforms[i].unitQuaternion;
+                out[i].translation.xyz = transforms[i].translation;
+                out[i].scales = out[i].iscales = { 1, 1, 1, 0 };
             }
         }
     }
@@ -518,18 +500,26 @@ void FRenderableManager::setBones(Instance ci,
                     offset * sizeof(InternalBone),
                     boneCount * sizeof(InternalBone));
             for (size_t i = 0, c = bones->count; i < c; ++i) {
-                const mat4f m = transpose(transforms[i]); // row-major
-                out[i].verticesTransformRowMajor[0] = m[0];
-                out[i].verticesTransformRowMajor[1] = m[1];
-                out[i].verticesTransformRowMajor[2] = m[2];
 
-                // for transforming normals, we can ignore the translation, and we need
-                // to take the transpose(inverse()).
-                // then take the transpose() for row-major encoding.
-                const mat3f n = inverse(transforms[i].upperLeft());
-                out[i].normalsTransformRowMajor[0].xyz = n[0];
-                out[i].normalsTransformRowMajor[1].xyz = n[1];
-                out[i].normalsTransformRowMajor[2].xyz = n[2];
+                mat4f m = transforms[i];
+                // figure out the scales
+                float4 s = { length(m[0]), length(m[1]), length(m[2]), 0.0f };
+                if (dot(cross(m[0].xyz, m[1].xyz), m[2].xyz) < 0) {
+                    m[2] = -m[2];
+                    s[2] = -s[2];
+                }
+
+                // compute the inverse scales
+                float4 is = { 1.0f/s.x, 1.0f/s.y, 1.0f/s.z, 0.0f };
+                // normalize the matrix
+                m[0] *= is[0];
+                m[1] *= is[1];
+                m[2] *= is[2];
+
+                out[i].rigidTransform = m.toQuaternion();
+                out[i].translation = m[3];
+                out[i].scales = s;
+                out[i].iscales = is;
             }
         }
     }
